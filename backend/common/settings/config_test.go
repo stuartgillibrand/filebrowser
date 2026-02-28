@@ -147,3 +147,75 @@ func TestInvalidConfig(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateConfig_UnixUserContextEnabledRequiresFiles(t *testing.T) {
+	tmpDir := t.TempDir()
+	helperPath := filepath.Join(tmpDir, "helper")
+	userMapPath := filepath.Join(tmpDir, "user-map.json")
+
+	if err := os.WriteFile(helperPath, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("failed to create helper file: %v", err)
+	}
+	if err := os.WriteFile(userMapPath, []byte("{}"), 0o644); err != nil {
+		t.Fatalf("failed to create user map file: %v", err)
+	}
+
+	cfg := setDefaults(true)
+	cfg.Server.Sources = []*Source{{Path: "."}}
+	cfg.Server.Filesystem.UnixUserContext.Enabled = true
+	cfg.Server.Filesystem.UnixUserContext.HelperPath = helperPath
+	cfg.Server.Filesystem.UnixUserContext.UserMapFile = userMapPath
+	cfg.Server.Filesystem.UnixUserContext.HelperTimeoutMs = 2500
+
+	Config = cfg
+	if err := ValidateConfig(cfg); err != nil {
+		t.Fatalf("expected unix user context config to validate, got error: %v", err)
+	}
+}
+
+func TestValidateConfig_UnixUserContextEnabledInvalidHelperPath(t *testing.T) {
+	cfg := setDefaults(true)
+	cfg.Server.Sources = []*Source{{Path: "."}}
+	cfg.Server.Filesystem.UnixUserContext.Enabled = true
+	cfg.Server.Filesystem.UnixUserContext.HelperPath = "/does/not/exist"
+	cfg.Server.Filesystem.UnixUserContext.UserMapFile = "/does/not/exist-map"
+	cfg.Server.Filesystem.UnixUserContext.HelperTimeoutMs = 2500
+
+	Config = cfg
+	err := ValidateConfig(cfg)
+	if err == nil {
+		t.Fatal("expected validation error for invalid unix user context paths")
+	}
+}
+
+func TestLoadEnvConfig_UnixUserContextOverrides(t *testing.T) {
+	tmpDir := t.TempDir()
+	helperPath := filepath.Join(tmpDir, "helper")
+	userMapPath := filepath.Join(tmpDir, "user-map.json")
+
+	t.Setenv("FILEBROWSER_UNIX_USER_CONTEXT_ENABLED", "true")
+	t.Setenv("FILEBROWSER_UNIX_USER_CONTEXT_FALLBACK", "false")
+	t.Setenv("FILEBROWSER_UNIX_USER_CONTEXT_HELPER_PATH", helperPath)
+	t.Setenv("FILEBROWSER_UNIX_USER_CONTEXT_USER_MAP_FILE", userMapPath)
+	t.Setenv("FILEBROWSER_UNIX_USER_CONTEXT_TIMEOUT_MS", "3200")
+
+	Config = setDefaults(true)
+	loadEnvConfig()
+
+	ctx := Config.Server.Filesystem.UnixUserContext
+	if !ctx.Enabled {
+		t.Fatal("expected unix user context enabled via env override")
+	}
+	if ctx.FallbackToServiceUser {
+		t.Fatal("expected fallbackToServiceUser=false via env override")
+	}
+	if ctx.HelperPath != helperPath {
+		t.Fatalf("expected helper path %q, got %q", helperPath, ctx.HelperPath)
+	}
+	if ctx.UserMapFile != userMapPath {
+		t.Fatalf("expected user map file %q, got %q", userMapPath, ctx.UserMapFile)
+	}
+	if ctx.HelperTimeoutMs != 3200 {
+		t.Fatalf("expected helper timeout 3200, got %d", ctx.HelperTimeoutMs)
+	}
+}

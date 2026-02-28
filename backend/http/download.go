@@ -121,6 +121,11 @@ func downloadHandler(w http.ResponseWriter, r *http.Request, d *requestContext) 
 }
 
 func rawFilesHandler(w http.ResponseWriter, r *http.Request, d *requestContext, source string, fileList []string) (int, error) {
+	resolution, err := resolveUnixUserContext("resource.download", d)
+	if err != nil {
+		return http.StatusForbidden, err
+	}
+
 	if !d.user.Permissions.Download && d.share == nil {
 		return http.StatusForbidden, fmt.Errorf("user is not allowed to download")
 	}
@@ -130,7 +135,6 @@ func rawFilesHandler(w http.ResponseWriter, r *http.Request, d *requestContext, 
 	}
 
 	firstFilePath := fileList[0]
-	var err error
 	var userscope string
 	fileName := filepath.Base(firstFilePath)
 
@@ -213,7 +217,33 @@ func rawFilesHandler(w http.ResponseWriter, r *http.Request, d *requestContext, 
 			}
 		}
 
-		fd, err2 := os.Open(realPath)
+		effectiveReadPath := realPath
+		cleanupReadPath := ""
+		if resolution.Active {
+			tmpDir := filepath.Join(config.Server.CacheDir, "unix-user-context", "download")
+			if mkErr := os.MkdirAll(tmpDir, 0o755); mkErr != nil {
+				if resolution.Config.FallbackToServiceUser {
+					logger.Warningf("unix helper temp dir creation failed for download %s; using service fallback: %v", realPath, mkErr)
+				} else {
+					return http.StatusInternalServerError, mkErr
+				}
+			} else {
+				tmpPath := filepath.Join(tmpDir, utils.InsecureRandomIdentifier(16)+"-"+filepath.Base(realPath))
+				helpErr := runUnixContextHelper(resolution, "copy", nil, realPath, tmpPath)
+				if helpErr != nil {
+					if resolution.Config.FallbackToServiceUser {
+						logger.Warningf("unix helper read-copy failed for %s; using service fallback: %v", realPath, helpErr)
+					} else {
+						return http.StatusInternalServerError, helpErr
+					}
+				} else {
+					effectiveReadPath = tmpPath
+					cleanupReadPath = tmpPath
+				}
+			}
+		}
+
+		fd, err2 := os.Open(effectiveReadPath)
 		if err2 != nil {
 			// Send OnlyOffice error log if this was an OnlyOffice download
 			if isOnlyOffice && logContext != nil {
@@ -223,6 +253,9 @@ func rawFilesHandler(w http.ResponseWriter, r *http.Request, d *requestContext, 
 			return http.StatusInternalServerError, err2
 		}
 		defer fd.Close()
+		if cleanupReadPath != "" {
+			defer os.Remove(cleanupReadPath)
+		}
 
 		// Get file size
 		fileInfo, err2 := fd.Stat()

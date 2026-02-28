@@ -124,6 +124,9 @@ func resourceGetHandler(w http.ResponseWriter, r *http.Request, d *requestContex
 // @Failure 500 {object} map[string]string "Internal server error"
 // @Router /api/resources [delete]
 func resourceDeleteHandler(w http.ResponseWriter, r *http.Request, d *requestContext) (int, error) {
+	if err := enforceUnixUserContextPolicy("resource.delete", d); err != nil {
+		return http.StatusForbidden, err
+	}
 
 	if !d.user.Permissions.Delete {
 		return http.StatusForbidden, fmt.Errorf("user is not allowed to delete")
@@ -148,7 +151,7 @@ func resourceDeleteHandler(w http.ResponseWriter, r *http.Request, d *requestCon
 	// delete thumbnails
 	preview.DelThumbs(r.Context(), *fileInfo)
 
-	err = files.DeleteFiles(source, fileInfo.RealPath, fileInfo.Type == "directory")
+	err = deleteFilesWithUnixContext(d, source, fileInfo.RealPath, fileInfo.Type == "directory")
 	if err != nil {
 		return errToStatus(err), err
 	}
@@ -206,6 +209,10 @@ type MoveCopyResponse struct {
 // @Failure 500 {object} map[string]string "Internal server error - all deletions failed"
 // @Router /api/resources/bulk [delete]
 func resourceBulkDeleteHandler(w http.ResponseWriter, r *http.Request, d *requestContext) (int, error) {
+	if err := enforceUnixUserContextPolicy("resource.bulkDelete", d); err != nil {
+		return http.StatusForbidden, err
+	}
+
 	filePermUser := d.user
 	if d.share != nil {
 		filePermUser = d.shareUser
@@ -283,7 +290,7 @@ func resourceBulkDeleteHandler(w http.ResponseWriter, r *http.Request, d *reques
 			}
 
 			// Delete the file/directory
-			err = files.DeleteFiles(source, fileInfo.RealPath, fileInfo.Type == "directory")
+			err = deleteFilesWithUnixContext(d, source, fileInfo.RealPath, fileInfo.Type == "directory")
 			if err != nil {
 				logger.Errorf("resource bulk delete handler: error deleting file/directory: %v", err)
 				response.Failed = append(response.Failed, BulkDeleteItem{
@@ -342,7 +349,7 @@ func resourceBulkDeleteHandler(w http.ResponseWriter, r *http.Request, d *reques
 				})
 				continue
 			}
-			err = files.DeleteFiles(item.Source, fileInfo.RealPath, fileInfo.Type == "directory")
+			err = deleteFilesWithUnixContext(d, item.Source, fileInfo.RealPath, fileInfo.Type == "directory")
 			if err != nil {
 				response.Failed = append(response.Failed, BulkDeleteItem{
 					Source:  item.Source,
@@ -383,6 +390,10 @@ func resourceBulkDeleteHandler(w http.ResponseWriter, r *http.Request, d *reques
 // @Failure 500 {object} map[string]string "Internal server error"
 // @Router /api/resources [post]
 func resourcePostHandler(w http.ResponseWriter, r *http.Request, d *requestContext) (int, error) {
+	if err := enforceUnixUserContextPolicy("resource.post", d); err != nil {
+		return http.StatusForbidden, err
+	}
+
 	path := r.URL.Query().Get("path")
 	source := r.URL.Query().Get("source")
 
@@ -449,7 +460,7 @@ func resourcePostHandler(w http.ResponseWriter, r *http.Request, d *requestConte
 		dirOpts := fileOpts
 		dirOpts.Path = fullIndexPath
 
-		err = files.WriteDirectory(dirOpts)
+		err = writeDirectoryWithUnixContext(d, dirOpts)
 		if err != nil {
 			logger.Debugf("error writing directory: %v", err)
 			return errToStatus(err), err
@@ -540,7 +551,7 @@ func resourcePostHandler(w http.ResponseWriter, r *http.Request, d *requestConte
 			// close file before moving
 			outFile.Close()
 			// Move the completed file from the temp location to the final destination
-			err = files.MoveResource(false, source, source, tempFilePath, realPath, store.Share, store.Access)
+			err = moveResourceWithUnixContext(d, false, source, source, tempFilePath, realPath, store.Share, store.Access)
 			if err != nil {
 				logger.Debugf("could not move file from %v to %v: %v", tempFilePath, realPath, err)
 				return http.StatusInternalServerError, fmt.Errorf("could not move file from chunked folder to destination: %v", err)
@@ -559,7 +570,7 @@ func resourcePostHandler(w http.ResponseWriter, r *http.Request, d *requestConte
 		preview.DelThumbs(r.Context(), *fileInfo)
 	}
 
-	err = files.WriteFile(fileOpts.Source, fullIndexPath, r.Body)
+	err = writeFileWithUnixContext(d, fileOpts.Source, fullIndexPath, r.Body)
 	if err != nil {
 		logger.Debugf("error writing file: %v", err)
 		return errToStatus(err), err
@@ -582,6 +593,10 @@ func resourcePostHandler(w http.ResponseWriter, r *http.Request, d *requestConte
 // @Failure 500 {object} map[string]string "Internal server error"
 // @Router /api/resources [put]
 func resourcePutHandler(w http.ResponseWriter, r *http.Request, d *requestContext) (int, error) {
+	if err := enforceUnixUserContextPolicy("resource.put", d); err != nil {
+		return http.StatusForbidden, err
+	}
+
 	source := r.URL.Query().Get("source")
 	path := r.URL.Query().Get("path")
 
@@ -613,7 +628,7 @@ func resourcePutHandler(w http.ResponseWriter, r *http.Request, d *requestContex
 		return http.StatusForbidden, fmt.Errorf("access denied to path %s", path)
 	}
 
-	err = files.WriteFile(source, utils.JoinPathAsUnix(userScope, path), r.Body)
+	err = writeFileWithUnixContext(d, source, utils.JoinPathAsUnix(userScope, path), r.Body)
 	return errToStatus(err), err
 }
 
@@ -632,6 +647,10 @@ func resourcePutHandler(w http.ResponseWriter, r *http.Request, d *requestContex
 // @Failure 500 {object} MoveCopyResponse "All operations failed"
 // @Router /api/resources [patch]
 func resourcePatchHandler(w http.ResponseWriter, r *http.Request, d *requestContext) (int, error) {
+	if err := enforceUnixUserContextPolicy("resource.patch", d); err != nil {
+		return http.StatusForbidden, err
+	}
+
 	if !d.user.Permissions.Modify && d.share == nil {
 		return http.StatusForbidden, fmt.Errorf("user is not allowed to create or modify")
 	}
@@ -912,7 +931,7 @@ type patchActionParams struct {
 func patchAction(ctx context.Context, params patchActionParams) error {
 	switch params.action {
 	case "copy":
-		err := files.CopyResource(params.isSrcDir, params.srcIndex, params.dstIndex, params.src, params.dst)
+		err := copyResourceWithUnixContext(params.d, params.isSrcDir, params.srcIndex, params.dstIndex, params.src, params.dst)
 		return err
 	case "rename", "move":
 		idx := indexing.GetIndex(params.srcIndex)
@@ -938,7 +957,7 @@ func patchAction(ctx context.Context, params patchActionParams) error {
 
 		// delete thumbnails
 		preview.DelThumbs(ctx, *fileInfo)
-		return files.MoveResource(params.isSrcDir, params.srcIndex, params.dstIndex, params.src, params.dst, store.Share, store.Access)
+		return moveResourceWithUnixContext(params.d, params.isSrcDir, params.srcIndex, params.dstIndex, params.src, params.dst, store.Share, store.Access)
 	default:
 		return fmt.Errorf("unsupported action %s: %w", params.action, errors.ErrInvalidRequestParams)
 	}

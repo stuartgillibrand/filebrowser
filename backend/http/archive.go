@@ -46,6 +46,10 @@ import (
 // @Failure 500 {object} map[string]string "Internal server error"
 // @Router /api/resources/archive [post]
 func archiveCreateHandler(w http.ResponseWriter, r *http.Request, d *requestContext) (int, error) {
+	if err := enforceUnixUserContextPolicy("resource.archiveCreate", d); err != nil {
+		return http.StatusForbidden, err
+	}
+
 	if d.share != nil {
 		return http.StatusForbidden, fmt.Errorf("archive create not allowed for shares")
 	}
@@ -197,7 +201,7 @@ func archiveCreateHandler(w http.ResponseWriter, r *http.Request, d *requestCont
 			}
 		}
 		for _, item := range toDelete {
-			if err := files.DeleteFiles(req.FromSource, item.realPath, item.isDir); err != nil {
+			if err := deleteFilesWithUnixContext(d, req.FromSource, item.realPath, item.isDir); err != nil {
 				logger.Errorf("Failed to delete source after archive: %v", err)
 			}
 		}
@@ -228,6 +232,10 @@ func archiveCreateHandler(w http.ResponseWriter, r *http.Request, d *requestCont
 // @Failure 500 {object} map[string]string "Internal server error"
 // @Router /api/resources/unarchive [post]
 func unarchiveHandler(w http.ResponseWriter, r *http.Request, d *requestContext) (int, error) {
+	if err := enforceUnixUserContextPolicy("resource.unarchive", d); err != nil {
+		return http.StatusForbidden, err
+	}
+
 	if d.share != nil {
 		return http.StatusForbidden, fmt.Errorf("unarchive not allowed for shares")
 	}
@@ -613,12 +621,111 @@ func createTarGzWithLevel(d *requestContext, source string, destPath string, lev
 	return nil
 }
 
+func createZipFromRealPaths(tmpPath string, realPaths []string) error {
+	file, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, fileutils.PermFile)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	zipWriter := zip.NewWriter(file)
+	for _, realPath := range realPaths {
+		if err := addRealPathToArchive(realPath, filepath.Base(realPath), nil, zipWriter); err != nil {
+			return err
+		}
+	}
+
+	if err := zipWriter.Close(); err != nil {
+		return fmt.Errorf("failed to finalize ZIP archive: %w", err)
+	}
+
+	return nil
+}
+
+func createTarGzFromRealPaths(tmpPath string, realPaths []string) error {
+	file, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, fileutils.PermFile)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	gzWriter := gzip.NewWriter(file)
+	defer gzWriter.Close()
+	tarWriter := tar.NewWriter(gzWriter)
+	defer tarWriter.Close()
+
+	for _, realPath := range realPaths {
+		if err := addRealPathToArchive(realPath, filepath.Base(realPath), tarWriter, nil); err != nil {
+			return err
+		}
+	}
+
+	if err := tarWriter.Close(); err != nil {
+		return fmt.Errorf("failed to finalize TAR archive: %w", err)
+	}
+	if err := gzWriter.Close(); err != nil {
+		return fmt.Errorf("failed to finalize GZIP compression: %w", err)
+	}
+
+	return nil
+}
+
+func addRealPathToArchive(realPath, archiveBase string, tarWriter *tar.Writer, zipWriter *zip.Writer) error {
+	info, err := os.Stat(realPath)
+	if err != nil {
+		return err
+	}
+
+	if info.IsDir() {
+		return filepath.Walk(realPath, func(filePath string, fileInfo os.FileInfo, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+
+			relPath, err := filepath.Rel(realPath, filePath)
+			if err != nil {
+				return err
+			}
+			relPath = filepath.ToSlash(relPath)
+			if relPath == "." {
+				return nil
+			}
+
+			archivePath := filepath.ToSlash(filepath.Join(archiveBase, relPath))
+			if fileInfo.IsDir() {
+				if tarWriter != nil {
+					header := &tar.Header{
+						Name:     archivePath + "/",
+						Mode:     int64(fileutils.PermDir),
+						Typeflag: tar.TypeDir,
+						ModTime:  fileInfo.ModTime(),
+					}
+					return tarWriter.WriteHeader(header)
+				}
+				if zipWriter != nil {
+					_, err := zipWriter.Create(archivePath + "/")
+					return err
+				}
+				return nil
+			}
+
+			return addSingleFile(filePath, archivePath, zipWriter, tarWriter)
+		})
+	}
+
+	return addSingleFile(realPath, archiveBase, zipWriter, tarWriter)
+}
+
 // BuildAndStreamArchive resolves paths, creates a zip or tar.gz archive, and streams it to w.
 // It respects access rules and max archive size. Used only by the raw handler for multi-file/directory download.
 func BuildAndStreamArchive(w http.ResponseWriter, r *http.Request, d *requestContext, source string, fileList []string) (int, error) {
+	resolution, err := resolveUnixUserContext("resource.download.archive", d)
+	if err != nil {
+		return http.StatusForbidden, err
+	}
+
 	firstFilePath := fileList[0]
 	var userscope string
-	var err error
 
 	if d.share == nil {
 		userscope, err = d.user.GetScopeForSourceName(source)
@@ -670,12 +777,75 @@ func BuildAndStreamArchive(w http.ResponseWriter, r *http.Request, d *requestCon
 	originalFileName := baseDirName + extension
 
 	archiveData := filepath.Join(config.Server.CacheDir, utils.InsecureRandomIdentifier(10))
+	helperStaged := false
 	if extension == ".zip" {
 		archiveData = archiveData + ".zip"
-		err = createZip(d, source, archiveData, fileList...)
 	} else {
 		archiveData = archiveData + ".tar.gz"
-		err = createTarGz(d, source, archiveData, fileList...)
+	}
+
+	if resolution.Active {
+		stagingRoot := filepath.Join(config.Server.CacheDir, "unix-user-context", "archive", utils.InsecureRandomIdentifier(12))
+		if mkErr := os.MkdirAll(stagingRoot, fileutils.PermDir); mkErr != nil {
+			if resolution.Config.FallbackToServiceUser {
+				logger.Warningf("unix helper archive staging mkdir failed; using service fallback: %v", mkErr)
+			} else {
+				return http.StatusInternalServerError, mkErr
+			}
+		} else {
+			defer os.RemoveAll(stagingRoot)
+			stagedPaths := make([]string, 0, len(fileList))
+			for _, itemPath := range fileList {
+				fullPath := itemPath
+				if d.share == nil {
+					fullPath = utils.JoinPathAsUnix(userscope, itemPath)
+					if store.Access != nil && !store.Access.Permitted(idx.Path, fullPath, d.user.Username) {
+						continue
+					}
+				}
+
+				realItemPath, _, realErr := idx.GetRealPath(fullPath)
+				if realErr != nil {
+					if resolution.Config.FallbackToServiceUser {
+						logger.Warningf("unix helper archive staging path resolve failed; using service fallback: %v", realErr)
+						stagedPaths = nil
+						break
+					}
+					return http.StatusInternalServerError, realErr
+				}
+
+				baseName := filepath.Base(realItemPath)
+				stageTarget := filepath.Join(stagingRoot, fmt.Sprintf("%02d-%s", len(stagedPaths), baseName))
+				helpErr := runUnixContextHelper(resolution, "copy", nil, realItemPath, stageTarget)
+				if helpErr != nil {
+					if resolution.Config.FallbackToServiceUser {
+						logger.Warningf("unix helper archive staging copy failed; using service fallback: %v", helpErr)
+						stagedPaths = nil
+						break
+					}
+					return http.StatusInternalServerError, helpErr
+				}
+
+				stagedPaths = append(stagedPaths, stageTarget)
+			}
+
+			if len(stagedPaths) > 0 {
+				helperStaged = true
+				if extension == ".zip" {
+					err = createZipFromRealPaths(archiveData, stagedPaths)
+				} else {
+					err = createTarGzFromRealPaths(archiveData, stagedPaths)
+				}
+			}
+		}
+	}
+
+	if !helperStaged {
+		if extension == ".zip" {
+			err = createZip(d, source, archiveData, fileList...)
+		} else {
+			err = createTarGz(d, source, archiveData, fileList...)
+		}
 	}
 	if err != nil {
 		return http.StatusInternalServerError, err

@@ -1,0 +1,5 @@
+manually review changes
+    from initial look, maybe think about using ticks instead of / as well ass random number for tmp filename
+    separate .go files instead of perceived heavy inlining?
+generate mermaid arc diagrams for new functionality
+TEST IT!!!

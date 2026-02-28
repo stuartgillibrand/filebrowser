@@ -3,6 +3,15 @@ server:
   baseURL:  "/"
   logging:
     - levels: "info|warning|error"
+  filesystem:
+    unixUserContext:
+      enabled: false                         # enable request-scoped Unix user impersonation via helper process
+      fallbackToServiceUser: true            # when impersonation fails, continue with service account identity
+      helperPath: "/usr/local/bin/filebrowser-privilege-helper"   # absolute path to privileged helper binary
+      helperTimeoutMs: 5000                  # helper operation timeout in milliseconds
+      userMapFile: "/etc/filebrowser/user-map.json"               # static username -> uid/gid mapping file (either uid, gid, or both are supported)
+      requireRootForHelper: true             # warn/fail if helper mode is enabled without root privileges
+      auditEffectiveIdentity: true           # include effective uid/gid in operation audit logs
   sources:
     - path: "/srv"
 userDefaults:

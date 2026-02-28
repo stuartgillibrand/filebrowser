@@ -63,11 +63,35 @@ func setupServer() {
 	if Config.Server.ListenAddress == "" {
 		Config.Server.ListenAddress = "0.0.0.0"
 	}
+	setupUnixUserContext()
 	// Check environment variable first (overrides config file)
 	if os.Getenv("FILEBROWSER_SQL_WAL") == "true" {
 		Config.Server.IndexSqlConfig.WalMode = true
 	}
 	// WalMode is false by default (OFF journaling)
+}
+
+func setupUnixUserContext() {
+	ctx := Config.Server.Filesystem.UnixUserContext
+	if !ctx.Enabled {
+		return
+	}
+
+	if ctx.RequireRootForHelper && os.Geteuid() != 0 {
+		logger.Warning("server.filesystem.unixUserContext is enabled but process is not running as root; helper impersonation will likely fail")
+	}
+
+	if ctx.HelperPath == "" {
+		logger.Warning("server.filesystem.unixUserContext enabled without helperPath; requests will use fallback behavior")
+		return
+	}
+
+	if _, err := os.Stat(ctx.HelperPath); err != nil {
+		logger.Warningf("unix user context helper path is not accessible: %q (%v)", ctx.HelperPath, err)
+		return
+	}
+
+	logger.Infof("Unix user context helper enabled: %s", ctx.HelperPath)
 }
 
 func setupEnv() {
@@ -581,6 +605,37 @@ func ValidateConfig(config Settings) error {
 	if err != nil {
 		return fmt.Errorf("could not validate config: %v", err)
 	}
+
+	err = validateUnixUserContextConfig(config)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateUnixUserContextConfig(config Settings) error {
+	ctx := config.Server.Filesystem.UnixUserContext
+	if !ctx.Enabled {
+		return nil
+	}
+
+	if ctx.HelperPath == "" {
+		return fmt.Errorf("server.filesystem.unixUserContext.helperPath is required when unixUserContext.enabled is true")
+	}
+	if ctx.UserMapFile == "" {
+		return fmt.Errorf("server.filesystem.unixUserContext.userMapFile is required when unixUserContext.enabled is true")
+	}
+	if ctx.HelperTimeoutMs <= 0 {
+		return fmt.Errorf("server.filesystem.unixUserContext.helperTimeoutMs must be greater than 0")
+	}
+
+	if _, err := os.Stat(ctx.HelperPath); err != nil {
+		return fmt.Errorf("server.filesystem.unixUserContext.helperPath is invalid: %v", err)
+	}
+	if _, err := os.Stat(ctx.UserMapFile); err != nil {
+		return fmt.Errorf("server.filesystem.unixUserContext.userMapFile is invalid: %v", err)
+	}
+
 	return nil
 }
 
@@ -655,6 +710,36 @@ func loadEnvConfig() {
 		Config.Auth.Methods.LdapAuth.UserPassword = ldapUserPassword
 		logger.Info("Using LDAP bind password from FILEBROWSER_LDAP_USER_PASSWORD environment variable")
 	}
+
+	unixUserContextEnabled := os.Getenv("FILEBROWSER_UNIX_USER_CONTEXT_ENABLED")
+	if unixUserContextEnabled != "" {
+		Config.Server.Filesystem.UnixUserContext.Enabled = unixUserContextEnabled == "true"
+	}
+
+	unixUserContextFallback := os.Getenv("FILEBROWSER_UNIX_USER_CONTEXT_FALLBACK")
+	if unixUserContextFallback != "" {
+		Config.Server.Filesystem.UnixUserContext.FallbackToServiceUser = unixUserContextFallback == "true"
+	}
+
+	unixUserContextHelperPath := os.Getenv("FILEBROWSER_UNIX_USER_CONTEXT_HELPER_PATH")
+	if unixUserContextHelperPath != "" {
+		Config.Server.Filesystem.UnixUserContext.HelperPath = unixUserContextHelperPath
+	}
+
+	unixUserContextUserMap := os.Getenv("FILEBROWSER_UNIX_USER_CONTEXT_USER_MAP_FILE")
+	if unixUserContextUserMap != "" {
+		Config.Server.Filesystem.UnixUserContext.UserMapFile = unixUserContextUserMap
+	}
+
+	unixUserContextTimeout := os.Getenv("FILEBROWSER_UNIX_USER_CONTEXT_TIMEOUT_MS")
+	if unixUserContextTimeout != "" {
+		timeoutMs, err := strconv.Atoi(unixUserContextTimeout)
+		if err == nil {
+			Config.Server.Filesystem.UnixUserContext.HelperTimeoutMs = timeoutMs
+		} else {
+			logger.Warningf("Ignoring invalid FILEBROWSER_UNIX_USER_CONTEXT_TIMEOUT_MS value %q: %v", unixUserContextTimeout, err)
+		}
+	}
 }
 
 func setDefaults(generate bool) Settings {
@@ -695,6 +780,15 @@ func setDefaults(generate bool) Settings {
 			Filesystem: Filesystem{
 				CreateFilePermission:      "644",
 				CreateDirectoryPermission: "755",
+				UnixUserContext: UnixUserContext{
+					Enabled:                false,
+					FallbackToServiceUser:  true,
+					HelperPath:             "/usr/local/bin/filebrowser-privilege-helper",
+					HelperTimeoutMs:        5000,
+					UserMapFile:            "/etc/filebrowser/user-map.json",
+					RequireRootForHelper:   true,
+					AuditEffectiveIdentity: true,
+				},
 			},
 		},
 		Auth: Auth{

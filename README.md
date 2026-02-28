@@ -94,6 +94,28 @@ a pop-up menu.
 
 See the [Official Docs](https://filebrowserquantum.com/). Contributions are welcome and encouraged! See [FilebrowserDocs Github](https://github.com/quantumx-apps/filebrowserDocs).
 
+## Unix User Map Examples
+
+When using `server.filesystem.unixUserContext`, each mapped username can provide:
+
+- both `uid` and `gid`
+- only `uid`
+- only `gid`
+
+Example map file (also included at `backend/user-map.example.json`):
+
+```json
+{
+  "users": {
+    "alice": { "uid": 1001, "gid": 1001 },
+    "build-bot": { "uid": 2001 },
+    "media-readers": { "gid": 3001 }
+  }
+}
+```
+
+If a user entry has neither `uid` nor `gid`, the request follows your configured fallback policy.
+
 ## Comparison Chart
 Application Name | <img width="48" src="https://github.com/user-attachments/assets/c40b22c9-33da-47b7-bc4c-ce69bb5cc174" > Quantum | <img width="48" src="https://github.com/filebrowser/filebrowser/blob/master/frontend/public/img/logo.svg" > Filebrowser | <img width="48" src="https://github.com/mickael-kerjean/filestash/blob/master/public/assets/logo/app_icon.png?raw=true" > Filestash | <img width="48" src="https://avatars.githubusercontent.com/u/19211038?s=200&v=4" >  Nextcloud | <img width="48" src="https://upload.wikimedia.org/wikipedia/commons/thumb/d/da/Google_Drive_logo.png/480px-Google_Drive_logo.png" > Google_Drive | <img width="48" src="https://avatars.githubusercontent.com/u/6422152?v=4" > FileRun
 --- | --- | --- | --- | --- | --- | --- |

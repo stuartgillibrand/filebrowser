@@ -1,0 +1,7 @@
+{
+  "users": {
+    "alice": { "uid": 1001, "gid": 1001 },
+    "build-bot": { "uid": 2001 },
+    "media-readers": { "gid": 3001 }
+  }
+}
