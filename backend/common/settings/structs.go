@@ -72,19 +72,19 @@ type Server struct {
 }
 
 type Filesystem struct {
-	CreateFilePermission      string `json:"createFilePermission" validate:"required,file_permission"`      // Unix permissions like 644, 755, 2755 (default: 644)
-	CreateDirectoryPermission string `json:"createDirectoryPermission" validate:"required,file_permission"` // Unix permissions like 755, 2755, 1777 (default: 755)
-	UnixUserContext           UnixUserContext `json:"unixUserContext"`                                            // optional request-scoped Unix user impersonation settings
+	CreateFilePermission      string          `json:"createFilePermission" validate:"required,file_permission"`      // Unix permissions like 644, 755, 2755 (default: 644)
+	CreateDirectoryPermission string          `json:"createDirectoryPermission" validate:"required,file_permission"` // Unix permissions like 755, 2755, 1777 (default: 755)
+	UnixUserContext           UnixUserContext `json:"unixUserContext"`                                               // optional request-scoped Unix user impersonation settings
 }
 
 type UnixUserContext struct {
-	Enabled                bool   `json:"enabled" yaml:"enabled"`                                 // enable request-scoped Unix user context via privilege helper
-	FallbackToServiceUser  bool   `json:"fallbackToServiceUser" yaml:"fallbackToServiceUser"`     // fallback to main process account when impersonation fails
-	HelperPath             string `json:"helperPath" yaml:"helperPath"`                           // absolute path to the privilege helper executable
-	HelperTimeoutMs        int    `json:"helperTimeoutMs" yaml:"helperTimeoutMs"`                 // timeout for helper operations in milliseconds
-	UserMapFile            string `json:"userMapFile" yaml:"userMapFile"`                         // path to static username->uid/gid mapping file
-	RequireRootForHelper   bool   `json:"requireRootForHelper" yaml:"requireRootForHelper"`       // when true, enforce root requirement if helper mode is enabled
-	AuditEffectiveIdentity bool   `json:"auditEffectiveIdentity" yaml:"auditEffectiveIdentity"`   // include effective uid/gid in operation audit logs
+	Enabled                bool   `json:"enabled" yaml:"enabled"`                               // enable request-scoped Unix user context via privilege helper
+	FallbackToServiceUser  bool   `json:"fallbackToServiceUser" yaml:"fallbackToServiceUser"`   // fallback to main process account when impersonation fails
+	HelperPath             string `json:"helperPath" yaml:"helperPath"`                         // absolute path to the privilege helper executable
+	HelperTimeoutMs        int    `json:"helperTimeoutMs" yaml:"helperTimeoutMs"`               // timeout for helper operations in milliseconds
+	UserMapFile            string `json:"userMapFile" yaml:"userMapFile"`                       // path to static username->uid/gid mapping file
+	RequireRootForHelper   bool   `json:"requireRootForHelper" yaml:"requireRootForHelper"`     // when true, enforce root requirement if helper mode is enabled
+	AuditEffectiveIdentity bool   `json:"auditEffectiveIdentity" yaml:"auditEffectiveIdentity"` // include effective uid/gid in operation audit logs
 }
 
 type IndexSqlConfig struct {
