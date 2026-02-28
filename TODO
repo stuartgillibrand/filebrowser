@@ -2,4 +2,5 @@ manually review changes
     from initial look, maybe think about using ticks instead of / as well ass random number for tmp filename
     separate .go files instead of perceived heavy inlining?
 generate mermaid arc diagrams for new functionality
+everything has been delegated into unix_user_context_ops.go (i.e. the default Files.xxxx()), should probs have these in an @outer@ else in the callsite
 TEST IT!!!
