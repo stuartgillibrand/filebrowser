@@ -28,8 +28,16 @@
             <a v-if="link.category === 'source' || link.category === 'source-minimal' || link.category === 'source-alt' || link.category === 'source-hybrid' || link.category === 'source-hybrid-2'" :href="getLinkHref(link)"
               class="action button source-button sidebar-link-button" :class="{
                 active: isLinkActive(link),
-                disabled: !isLinkAccessible(link)
-              }" @click.prevent="handleLinkClick(link)" :aria-label="link.name">
+                disabled: !isLinkAccessible(link),
+                'droppable-link': canSidebarDrop && isLinkAccessible(link),
+                'drag-over': dragOverTarget === getSourceDropKey(link)
+              }"
+              @click.prevent="handleLinkClick(link)"
+              @dragenter="onSourceDragEnter($event, link)"
+              @dragleave="onSourceDragLeave($event, getSourceDropKey(link))"
+              @dragover="onSourceDragOver($event, link)"
+              @drop="onSourceDrop($event, link)"
+              :aria-label="link.name">
               <div class="source-container" :class="{ 'has-usage-info': hasUsageInfo(link) }">
                 <!-- Show custom icon if user has set one -->
                 <i v-if="link.icon" :class="getIconClass(link.icon) + ' link-icon'">{{ link.icon }}</i>
@@ -103,8 +111,18 @@
         <div v-if="!isShare" class="source-card-container" ref="sourceCardContainer">
           <!-- Current Source Card -->
           <div class="action button source-button navigation-source-card"
-               :class="{ 'has-usage': hasUsageInfo(activeSourceLink) }"
-               @click="navigateToSource(activeSource)" role="button" tabindex="0">
+               :class="{
+                 'has-usage': hasUsageInfo(activeSourceLink),
+                 'droppable-link': canSidebarDrop && isLinkAccessible(activeSourceLink),
+                 'drag-over': dragOverTarget === getSourceDropKey(activeSourceLink)
+               }"
+               @click="navigateToSource(activeSource)"
+               @dragenter="onSourceDragEnter($event, activeSourceLink)"
+               @dragleave="onSourceDragLeave($event, getSourceDropKey(activeSourceLink))"
+               @dragover="onSourceDragOver($event, activeSourceLink)"
+               @drop="onSourceDrop($event, activeSourceLink)"
+               role="button"
+               tabindex="0">
             <div class="source-container" :class="{ 'has-usage-info': hasUsageInfo(activeSourceLink) }">
               <i v-if="activeSourceLink.icon && isLinkAccessible(activeSourceLink)"
                  :class="getIconClass(activeSourceLink.icon) + ' link-icon'">
@@ -161,7 +179,16 @@
           <!-- Source Dropdown -->
           <transition name="dropdown">
             <div v-if="showSourceDropdown" class="source-dropdown" ref="dropdown">
-              <div v-for="sourceName in sourceNames" :key="sourceName" class="dropdown-item"
+              <div v-for="sourceName in sourceNames" :key="sourceName"
+                   class="dropdown-item"
+                   :class="{
+                     'droppable-link': canSidebarDrop,
+                     'drag-over': dragOverTarget === getSourceDropKey(getSourceLinkByName(sourceName))
+                   }"
+                   @dragenter="onSourceDragEnter($event, getSourceLinkByName(sourceName))"
+                   @dragleave="onSourceDragLeave($event, getSourceDropKey(getSourceLinkByName(sourceName)))"
+                   @dragover="onSourceDragOver($event, getSourceLinkByName(sourceName))"
+                   @drop="onSourceDrop($event, getSourceLinkByName(sourceName))"
                    @click="selectSource(sourceName)">
                 {{ sourceName }}
               </div>
@@ -181,11 +208,13 @@
 <script>
 import { state, getters, mutations } from "@/store";
 import ProgressBar from "@/components/ProgressBar.vue";
-import { goToItem } from "@/utils/url";
+import { goToItem, joinPath } from "@/utils/url";
 import { getIconClass } from "@/utils/material-icons";
 import { buildIndexInfoTooltipHTML } from "@/components/files/IndexInfo.vue";
 import { globalVars } from "@/utils/constants";
 import { resourcesApi } from "@/api";
+import * as upload from "@/utils/upload";
+import { notify } from "@/notify";
 import ShareInfo from "@/components/files/ShareInfo.vue";
 import FileTree from '@/components/files/FileTree.vue';
 
@@ -199,6 +228,7 @@ export default {
   data() {
     return {
       showSourceDropdown: false,
+      dragOverTarget: null,
     };
   },
   computed: {
@@ -267,6 +297,9 @@ export default {
     mode() {
       return getters.sidebarMode();
     },
+    canSidebarDrop() {
+      return !this.isShare && getters.permissions()?.modify;
+    },
     // Build a map from source name to its custom link (if any)
     sourceLinkMap() {
       const map = {};
@@ -296,9 +329,11 @@ export default {
   },
   mounted() {
     document.addEventListener('click', this.closeDropdown);
+    window.addEventListener('dragend', this.clearDragState);
   },
   beforeUnmount() {
     document.removeEventListener('click', this.closeDropdown);
+    window.removeEventListener('dragend', this.clearDragState);
   },
   methods: {
     isSourceCategory(category) {
@@ -521,6 +556,189 @@ export default {
     },
     hideTooltip() {
       mutations.hideTooltip();
+    },
+    clearDragState() {
+      this.dragOverTarget = null;
+    },
+    isInternalDrag(event) {
+      return Array.from(event?.dataTransfer?.types || []).includes(
+        "application/x-filebrowser-internal-drag"
+      );
+    },
+    getSourceTargetPath(link) {
+      const targetPath = link?.target || '/';
+      return targetPath.startsWith('/') ? targetPath : `/${targetPath}`;
+    },
+    getSourceDropKey(link) {
+      if (!link?.sourceName) return '';
+      return `${link.sourceName}:${this.getSourceTargetPath(link)}`;
+    },
+    getSourceLinkByName(sourceName) {
+      const customLink = this.sourceLinkMap[sourceName];
+      if (customLink) {
+        return customLink;
+      }
+      return {
+        name: sourceName,
+        category: 'source',
+        target: '/',
+        icon: '',
+        sourceName,
+      };
+    },
+    onSourceDragEnter(event, link) {
+      if (!this.canSidebarDrop || !this.isSourceCategory(link?.category)) return;
+      if (!this.isLinkAccessible(link) || !this.isInternalDrag(event)) return;
+      event.preventDefault();
+      this.dragOverTarget = this.getSourceDropKey(link);
+    },
+    onSourceDragOver(event, link) {
+      if (!this.canSidebarDrop || !this.isSourceCategory(link?.category)) return;
+      if (!this.isLinkAccessible(link) || !this.isInternalDrag(event)) return;
+      event.preventDefault();
+      this.dragOverTarget = this.getSourceDropKey(link);
+    },
+    onSourceDragLeave(event, dropKey) {
+      if (event.currentTarget.contains(event.relatedTarget)) {
+        return;
+      }
+      if (this.dragOverTarget === dropKey) {
+        this.dragOverTarget = null;
+      }
+    },
+    async onSourceDrop(event, link) {
+      const dropKey = this.getSourceDropKey(link);
+      if (this.dragOverTarget === dropKey) {
+        this.dragOverTarget = null;
+      }
+
+      if (!this.canSidebarDrop || !this.isSourceCategory(link?.category)) return;
+      if (!this.isLinkAccessible(link) || !this.isInternalDrag(event)) return;
+
+      event.preventDefault();
+      event.stopPropagation();
+
+      try {
+        await this.moveSelectedItemsToSource(link);
+      } catch (error) {
+        notify.showErrorToast(this.$t('prompts.moveFailed'));
+      }
+    },
+    normalizePath(path) {
+      if (!path || path === '/') return '/';
+      return path.replace(/\/$/, '');
+    },
+    async moveSelectedItemsToSource(link) {
+      const destinationSource = link?.sourceName;
+      const destinationPath = this.getSourceTargetPath(link);
+
+      if (!destinationSource) return;
+
+      const selectedIndices = state.selected || [];
+      if (!selectedIndices.length) return;
+
+      const currentSource = state.req?.source;
+      const currentPath = state.req?.path || '/';
+
+      if (
+        destinationSource === currentSource &&
+        this.normalizePath(destinationPath) === this.normalizePath(currentPath)
+      ) {
+        notify.showErrorToast(this.$t('files.sameFolder'));
+        return;
+      }
+
+      let itemsToMove = [];
+      for (const index of selectedIndices) {
+        const selectedItem = state.req?.items?.[index];
+        if (!selectedItem) continue;
+
+        const fromPath = selectedItem.path || joinPath(currentPath, selectedItem.name);
+        const fromSource = selectedItem.source || currentSource;
+        const toPath = joinPath(destinationPath, selectedItem.name);
+
+        if (fromPath === toPath && fromSource === destinationSource) {
+          continue;
+        }
+
+        if (selectedItem.type === 'directory' && fromSource === destinationSource) {
+          const fromDir = this.normalizePath(fromPath);
+          const toDir = this.normalizePath(toPath);
+          if (toDir.startsWith(fromDir + '/')) {
+            continue;
+          }
+        }
+
+        itemsToMove.push({
+          from: fromPath,
+          fromSource,
+          to: toPath,
+          toSource: destinationSource,
+        });
+      }
+
+      if (!itemsToMove.length) {
+        return;
+      }
+
+      let targetDirItems = [];
+      try {
+        const response = await resourcesApi.fetchFiles(destinationSource, destinationPath);
+        targetDirItems = response?.items || [];
+      } catch (error) {
+        notify.showErrorToast(this.$t('files.cannotAccesDir'));
+        return;
+      }
+
+      const conflict = upload.checkConflict(itemsToMove, targetDirItems);
+
+      const moveAction = async (overwrite, rename) => {
+        mutations.showHover({
+          name: 'move',
+          props: {
+            operationInProgress: true,
+          },
+        });
+
+        try {
+          await resourcesApi.moveCopy(itemsToMove, 'move', overwrite, rename);
+          const buttonAction = () => {
+            goToItem(destinationSource, destinationPath, {});
+          };
+          notify.showSuccess(this.$t('prompts.moveSuccess'), {
+            icon: 'folder',
+            buttons: [
+              {
+                label: this.$t('buttons.goToItem'),
+                primary: true,
+                action: buttonAction,
+              },
+            ],
+          });
+          mutations.closeHovers();
+          mutations.setReload(true);
+        } catch (error) {
+          mutations.closeHovers();
+          throw error;
+        }
+      };
+
+      if (conflict) {
+        mutations.showHover({
+          name: 'replace-rename',
+          pinned: true,
+          confirm: async (event, option) => {
+            const overwrite = option === 'overwrite';
+            const rename = option === 'rename';
+            event.preventDefault();
+            mutations.closeHovers();
+            await moveAction(overwrite, rename);
+          },
+        });
+        return;
+      }
+
+      await moveAction(false, false);
     },
     showSourceTooltip(event, info) {
       if (info) {
@@ -842,6 +1060,18 @@ a.sidebar-link-button {
 .navigation-source-card {
   margin-top: 0 !important;
   max-width: 98%;
+}
+
+.sidebar-link-button.droppable-link,
+.navigation-source-card.droppable-link,
+.dropdown-item.droppable-link {
+  transition: background 0.2s;
+}
+
+.sidebar-link-button.drag-over,
+.navigation-source-card.drag-over,
+.dropdown-item.drag-over {
+  background: var(--alt-background);
 }
 
 .source-dropdown-button {
