@@ -1,4 +1,14 @@
 services:
+  local:
+    container_name: filebrowser-local
+    ports:
+      - "80:80"
+    build:
+      context: ../
+      dockerfile: ./_docker/Dockerfile.slim
+      args:
+        VERSION: "local"
+        REVISION: "n/a"
   local-playwright:
     container_name: local-playwright
     ports:

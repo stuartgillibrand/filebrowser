@@ -15,7 +15,7 @@ endif
 
 .PHONY: setup update build build-docker build-backend build-frontend dev run generate-docs
 .PHONY: lint-frontend lint-backend lint test test-backend test-frontend check-all
-.PHONY: check-translations sync-translations test-playwright run-proxy screenshots
+.PHONY: check-translations sync-translations test-playwright run-proxy run-local screenshots
 
 setup:
 	echo "creating ./backend/test_config.yaml for local testing..."
@@ -39,6 +39,10 @@ build-docker:
 
 build-docker-slim:
 	docker build --build-arg="VERSION=testing" --build-arg="REVISION=n/a" -t gtstef/filebrowser -f _docker/Dockerfile.slim .
+
+run-local:
+	@echo "Building and running filebrowser locally on http://localhost:80 ..."
+	cd _docker && docker compose up --build local
 
 build-backend:
 	@echo "Building backend..."
