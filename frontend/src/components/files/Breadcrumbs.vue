@@ -32,10 +32,9 @@
 </template>
 
 <script>
-import { state, getters, mutations } from "@/store";
+import { state, getters } from "@/store";
 import { url } from "@/utils";
-import { resourcesApi } from "@/api";
-import { notify } from "@/notify";
+import { moveSelectedItemsToTarget } from "@/utils/internal-drag-move";
 
 export default {
   name: "breadcrumbs",
@@ -176,146 +175,18 @@ export default {
       if (!this.isDroppable) return;
 
       event.preventDefault();
-      event.stopPropagation();
-      this.clearDragState();
 
-      const isInternal = Array.from(event.dataTransfer.types).includes(
-        "application/x-filebrowser-internal-drag"
-      );
-
-      if (!isInternal) return;
-
-      // Get the target path for this breadcrumb
-      const targetPath = link.path; // Use the path from the link object
-      const currentPath = state.req.path;
+      const targetPath = link.path;
       const source = state.req.source;
 
-      // Normalize paths for comparison
-      const normalizePath = (path) => {
-        if (!path || path === "/") return "/";
-        return path.replace(/\/$/, ''); // Remove trailing slash
-      };
-
-      const normalizedTarget = normalizePath(targetPath);
-      const normalizedCurrent = normalizePath(currentPath);
-
-      if (normalizedTarget === normalizedCurrent) {
-        notify.showErrorToast(this.$t("files.sameFolder"));
-        console.error("Cannot move to same folder");
-        return;
-      }
-
-      // Build list of items to move from selected items
-      let itemsToMove = [];
-      for (let i of state.selected) {
-        if (i < 0 || i >= state.req.length) continue;
-
-        const selectedItem = state.req.items[i];
-
-        let fromPath = selectedItem.path;
-
-        if (!fromPath) {
-          fromPath = url.joinPath(state.req.path, selectedItem.name);
-        }
-
-        itemsToMove.push({
-          from: fromPath,
-          fromSource: selectedItem.source,
-          to: url.joinPath(targetPath, selectedItem.name),
-          toSource: source,
-          itemType: selectedItem.type
-        });
-      }
-
-      // Filter out invalid moves
-      itemsToMove = itemsToMove.filter(item => {
-        if (item.from === item.to) return false;
-
-        // Prevent moving a directory into itself -- likely never will happen but just in case
-        if (item.itemType === 'directory') {
-          const fromDir = normalizePath(item.from);
-          const toDir = normalizePath(item.to);
-
-          // Check if destination is inside the directory
-          if (toDir.startsWith(fromDir + "/")) {
-            return false;
-          }
-        }
-        return true;
+      await moveSelectedItemsToTarget({
+        targetSource: source,
+        targetPath,
+        translate: (key) => this.$t(key),
+        onNavigate: () => {
+          url.goToItem(source, targetPath, {});
+        },
       });
-
-      // Check for conflicts in target directory
-      let targetDirItems = [];
-      try {
-        if (getters.isShare()) {
-          const response = await resourcesApi.fetchFilesPublic(targetPath, state.shareInfo.hash);
-          targetDirItems = response?.items;
-        } else {
-          const response = await resourcesApi.fetchFiles(source, targetPath);
-          targetDirItems = response?.items;
-        }
-      } catch (error) {
-        notify.showErrorToast(this.$t("files.cannotAccesDir"));
-        console.log("Cannot access to target directory", e);
-        return;
-      }
-
-      // if any item conflics will show replace-rename prompt later
-      const conflict = itemsToMove.some(item => {
-        const itemName = item.to.split('/').pop(); // Extract filename from destination path
-        return targetDirItems.some(targetItem => targetItem.name === itemName);
-      });
-
-      const moveAction = async (overwrite, rename) => {
-        mutations.showHover({
-          name: "move",
-          props: { operationInProgress: true },
-        });
-
-        try {
-          if (getters.isShare()) {
-            await resourcesApi.moveCopyPublic(state.shareInfo.hash, itemsToMove, "move", overwrite, rename);
-          } else {
-            await resourcesApi.moveCopy(itemsToMove, "move", overwrite, rename);
-          }
-
-          const buttonAction = () => {
-            url.goToItem(source, targetPath, {});
-          };
-
-          notify.showSuccess(this.$t("prompts.moveSuccess"), {
-            icon: "folder",
-            buttons: [{
-              label: this.$t("buttons.goToItem"),
-              primary: true,
-              action: buttonAction
-            }]
-          });
-          mutations.closeHovers();
-          mutations.setReload(true);
-        } catch (error) {
-          mutations.closeHovers();
-          notify.showErrorToast(this.$t("prompts.moveFailed"));
-          console.log("Move failed", e);
-        }
-      };
-
-      if (conflict) {
-        mutations.showHover({
-          name: "replace-rename",
-          pinned: true,
-          confirm: (event, option) => {
-            const overwrite = option === "overwrite";
-            const rename = option === "rename";
-            event.preventDefault();
-            mutations.closeTopHover();
-            moveAction(overwrite, rename);
-          },
-        });
-        return;
-      }
-      // If no conflicts, proceed with move
-      await moveAction(false, false);
     },
   },
 };

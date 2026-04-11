@@ -28,8 +28,15 @@
             <a v-if="link.category === 'source' || link.category === 'source-minimal' || link.category === 'source-alt' || link.category === 'source-hybrid' || link.category === 'source-hybrid-2'" :href="getLinkHref(link)"
               class="action button source-button sidebar-link-button" :class="{
                 active: isLinkActive(link),
-                disabled: !isLinkAccessible(link)
-              }" @click.prevent="handleLinkClick(link)" :aria-label="link.name">
+                disabled: !isLinkAccessible(link),
+                'drag-over': isSourceDragOver(link)
+              }"
+              @click.prevent="handleLinkClick(link)"
+              @dragenter.prevent="handleSourceDragEnter($event, link)"
+              @dragover.prevent="handleSourceDragOver($event, link)"
+              @dragleave.prevent="handleSourceDragLeave($event, link)"
+              @drop.prevent="handleSourceDrop($event, link)"
+              :aria-label="link.name">
               <div class="source-container" :class="{ 'has-usage-info': hasUsageInfo(link) }">
                 <!-- Show custom icon if user has set one -->
                 <i v-if="link.icon" :class="getIconClass(link.icon) + ' link-icon'">{{ link.icon }}</i>
@@ -162,7 +169,12 @@
           <transition name="dropdown">
             <div v-if="showSourceDropdown" class="source-dropdown" ref="dropdown">
               <div v-for="sourceName in sourceNames" :key="sourceName" class="dropdown-item"
-                   @click="selectSource(sourceName)">
+                   :class="{ 'drag-over': isDropdownSourceDragOver(sourceName) }"
+                   @click="selectSource(sourceName)"
+                   @dragenter.prevent="handleDropdownSourceDragEnter($event, sourceName)"
+                   @dragover.prevent="handleDropdownSourceDragOver($event, sourceName)"
+                   @dragleave.prevent="handleDropdownSourceDragLeave($event, sourceName)"
+                   @drop.prevent="handleDropdownSourceDrop($event, sourceName)">
                 {{ sourceName }}
               </div>
             </div>
@@ -188,6 +200,7 @@ import { globalVars } from "@/utils/constants";
 import { resourcesApi } from "@/api";
 import ShareInfo from "@/components/files/ShareInfo.vue";
 import FileTree from '@/components/files/FileTree.vue';
+import { moveSelectedItemsToTarget } from "@/utils/internal-drag-move";
 
 export default {
   name: "SidebarLinks",
@@ -199,6 +212,8 @@ export default {
   data() {
     return {
       showSourceDropdown: false,
+      dragOverSourceKey: null,
+      dragOverDropdownSource: null,
     };
   },
   computed: {
@@ -267,6 +282,9 @@ export default {
     mode() {
       return getters.sidebarMode();
     },
+    canDropToSource() {
+      return !!getters.permissions()?.modify;
+    },
     // Build a map from source name to its custom link (if any)
     sourceLinkMap() {
       const map = {};
@@ -301,6 +319,104 @@ export default {
     document.removeEventListener('click', this.closeDropdown);
   },
   methods: {
+    isInternalDragEvent(event) {
+      return Array.from(event.dataTransfer?.types || []).includes(
+        "application/x-filebrowser-internal-drag"
+      );
+    },
+    toDropPath(path) {
+      if (!path) return "/";
+      return path.startsWith('/') ? path : `/${path}`;
+    },
+    getSourceDropKey(link) {
+      return `${link.sourceName}:${this.toDropPath(link.target)}`;
+    },
+    isSourceDragOver(link) {
+      return this.dragOverSourceKey === this.getSourceDropKey(link);
+    },
+    isDropdownSourceDragOver(sourceName) {
+      return this.dragOverDropdownSource === sourceName;
+    },
+    canHandleSourceDrop(event, link) {
+      if (!this.canDropToSource) return false;
+      if (!this.isSourceCategory(link.category)) return false;
+      if (!this.isLinkAccessible(link)) return false;
+      if (!this.isInternalDragEvent(event)) return false;
+      return true;
+    },
+    handleSourceDragEnter(event, link) {
+      if (!this.canHandleSourceDrop(event, link)) return;
+      event.preventDefault();
+      this.dragOverSourceKey = this.getSourceDropKey(link);
+    },
+    handleSourceDragOver(event, link) {
+      if (!this.canHandleSourceDrop(event, link)) return;
+      event.preventDefault();
+      this.dragOverSourceKey = this.getSourceDropKey(link);
+    },
+    handleSourceDragLeave(event, link) {
+      if (!this.canHandleSourceDrop(event, link)) return;
+      if (event.currentTarget.contains(event.relatedTarget)) {
+        return;
+      }
+      if (this.isSourceDragOver(link)) {
+        this.dragOverSourceKey = null;
+      }
+    },
+    async handleSourceDrop(event, link) {
+      if (!this.canHandleSourceDrop(event, link)) return;
+      event.preventDefault();
+      event.stopPropagation();
+
+      this.dragOverSourceKey = null;
+
+      const targetPath = this.toDropPath(link.target);
+      const targetSource = link.sourceName;
+
+      await moveSelectedItemsToTarget({
+        targetSource,
+        targetPath,
+        translate: (key) => this.$t(key),
+        onNavigate: () => {
+          goToItem(targetSource, targetPath, {});
+        },
+      });
+    },
+    handleDropdownSourceDragEnter(event, sourceName) {
+      if (!this.canDropToSource || !this.isInternalDragEvent(event)) return;
+      event.preventDefault();
+      this.dragOverDropdownSource = sourceName;
+    },
+    handleDropdownSourceDragOver(event, sourceName) {
+      if (!this.canDropToSource || !this.isInternalDragEvent(event)) return;
+      event.preventDefault();
+      this.dragOverDropdownSource = sourceName;
+    },
+    handleDropdownSourceDragLeave(event, sourceName) {
+      if (!this.canDropToSource || !this.isInternalDragEvent(event)) return;
+      if (event.currentTarget.contains(event.relatedTarget)) {
+        return;
+      }
+      if (this.dragOverDropdownSource === sourceName) {
+        this.dragOverDropdownSource = null;
+      }
+    },
+    async handleDropdownSourceDrop(event, sourceName) {
+      if (!this.canDropToSource || !this.isInternalDragEvent(event)) return;
+      event.preventDefault();
+      event.stopPropagation();
+
+      this.dragOverDropdownSource = null;
+
+      await moveSelectedItemsToTarget({
+        targetSource: sourceName,
+        targetPath: '/',
+        translate: (key) => this.$t(key),
+        onNavigate: () => {
+          goToItem(sourceName, '/', {});
+        },
+      });
+    },
     isSourceCategory(category) {
       return category === 'source' || category === 'source-minimal' || category === 'source-alt' ||
              category === 'source-hybrid' || category === 'source-hybrid-2';
@@ -745,6 +861,11 @@ a.sidebar-link-button {
   background: var(--alt-background);
 }
 
+.source-button.drag-over {
+  background: var(--primaryColor) !important;
+  color: white;
+}
+
 .realtime-pulse>.pulse {
   display: none;
   fill-opacity: 0;
@@ -891,6 +1012,11 @@ a.sidebar-link-button {
 
 .dropdown-item:hover {
   background: var(--surfaceSecondary);
+}
+
+.dropdown-item.drag-over {
+  background: var(--primaryColor);
+  color: white;
 }
 
 </style>
