@@ -128,7 +128,18 @@ make build-backend   # Build Go binary with embedded assets
 
 ### Docker
 ```bash
-make build       # Full image with ffmpeg and muPDF
+make build-docker       # Full image with ffmpeg and muPDF
+make build-docker-slim  # Slim image without ffmpeg and muPDF
+```
+
+To run locally after building:
+```bash
+docker run -p 80:80 gtstef/filebrowser
+```
+
+Or use the make target for a one-step build and run:
+```bash
+make run-local  # Build slim image and run on http://localhost:80
 ```
 
 ### Configuration
